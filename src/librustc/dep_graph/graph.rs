@@ -144,12 +144,7 @@ impl DepGraph {
         if let Some(..) = self.data {
             ty::tls::with_context_opt(|icx| {
                 let icx = if let Some(icx) = icx { icx } else { return };
-                match *icx.task {
-                    OpenTask::Ignore => {
-                        // ignored
-                    }
-                    _ => panic!("expected an ignore context")
-                }
+                assert!(icx.task_deps.is_none(), "expected no task dependency tracking");
             })
         }
     }
@@ -159,7 +154,7 @@ impl DepGraph {
     {
         ty::tls::with_context(|icx| {
             let icx = ty::tls::ImplicitCtxt {
-                task: &OpenTask::Ignore,
+                task_deps: None,
                 ..icx.clone()
             };
 
@@ -206,12 +201,13 @@ impl DepGraph {
               R: HashStable<StableHashingContext<'gcx>>,
     {
         self.with_task_impl(key, cx, arg, false, task,
-            |key| OpenTask::Regular(Lock::new(RegularOpenTask {
-                node: key,
+            |_key| Some(TaskDeps {
+                #[cfg(debug_assertions)]
+                node: Some(_key),
                 reads: SmallVec::new(),
                 read_set: Default::default(),
-            })),
-            |data, key, task| data.borrow_mut().complete_task(key, task))
+            }),
+            |data, key, task| data.borrow_mut().complete_task(key, task.unwrap()))
     }
 
     /// Creates a new dep-graph input with value `input`
@@ -228,7 +224,7 @@ impl DepGraph {
         }
 
         self.with_task_impl(key, cx, input, true, identity_fn,
-            |_| OpenTask::Ignore,
+            |_| None,
             |data, key, _| data.borrow_mut().alloc_node(key, SmallVec::new()))
     }
 
@@ -239,17 +235,17 @@ impl DepGraph {
         arg: A,
         no_tcx: bool,
         task: fn(C, A) -> R,
-        create_task: fn(DepNode) -> OpenTask,
+        create_task: fn(DepNode) -> Option<TaskDeps>,
         finish_task_and_alloc_depnode: fn(&Lock<CurrentDepGraph>,
                                           DepNode,
-                                          OpenTask) -> DepNodeIndex
+                                          Option<TaskDeps>) -> DepNodeIndex
     ) -> (R, DepNodeIndex)
     where
         C: DepGraphSafe + StableHashingContextProvider<'gcx>,
         R: HashStable<StableHashingContext<'gcx>>,
     {
         if let Some(ref data) = self.data {
-            let open_task = create_task(key);
+            let task_deps = create_task(key).map(|deps| Lock::new(deps));
 
             // In incremental mode, hash the result of the task. We don't
             // do anything with the hash yet, but we are computing it
@@ -267,7 +263,7 @@ impl DepGraph {
             } else {
                 ty::tls::with_context(|icx| {
                     let icx = ty::tls::ImplicitCtxt {
-                        task: &open_task,
+                        task_deps: task_deps.as_ref(),
                         ..icx.clone()
                     };
 
@@ -281,7 +277,11 @@ impl DepGraph {
                 profq_msg(hcx.sess(), ProfileQueriesMsg::TaskEnd)
             };
 
-            let dep_node_index = finish_task_and_alloc_depnode(&data.current, key, open_task);
+            let dep_node_index = finish_task_and_alloc_depnode(
+                &data.current,
+                key,
+                task_deps.map(|lock| lock.into_inner()),
+            );
 
             let mut stable_hasher = StableHasher::new();
             result.hash_stable(&mut hcx, &mut stable_hasher);
@@ -350,15 +350,17 @@ impl DepGraph {
         where OP: FnOnce() -> R
     {
         if let Some(ref data) = self.data {
-            let (result, open_task) = ty::tls::with_context(|icx| {
-                let task = OpenTask::Anon(Lock::new(AnonOpenTask {
+            let (result, task_deps) = ty::tls::with_context(|icx| {
+                let task_deps = Lock::new(TaskDeps {
+                    #[cfg(debug_assertions)]
+                    node: None,
                     reads: SmallVec::new(),
                     read_set: Default::default(),
-                }));
+                });
 
                 let r = {
                     let icx = ty::tls::ImplicitCtxt {
-                        task: &task,
+                        task_deps: Some(&task_deps),
                         ..icx.clone()
                     };
 
@@ -367,11 +369,11 @@ impl DepGraph {
                     })
                 };
 
-                (r, task)
+                (r, task_deps.into_inner())
             });
             let dep_node_index = data.current
                                      .borrow_mut()
-                                     .pop_anon_task(dep_kind, open_task);
+                                     .complete_anon_task(dep_kind, task_deps);
             (result, dep_node_index)
         } else {
             (op(), DepNodeIndex::INVALID)
@@ -390,16 +392,23 @@ impl DepGraph {
               R: HashStable<StableHashingContext<'gcx>>,
     {
         self.with_task_impl(key, cx, arg, false, task,
-            |key| OpenTask::EvalAlways { node: key },
-            |data, key, task| data.borrow_mut().complete_eval_always_task(key, task))
+            |_| None,
+            |data, key, _| {
+                let mut current = data.borrow_mut();
+                let krate_idx = current.node_to_node_index[
+                    &DepNode::new_no_params(DepKind::Krate)
+                ];
+                current.alloc_node(key, smallvec![krate_idx])
+            })
     }
 
     #[inline]
     pub fn read(&self, v: DepNode) {
         if let Some(ref data) = self.data {
-            let mut current = data.current.borrow_mut();
+            let current = data.current.borrow_mut();
             if let Some(&dep_node_index) = current.node_to_node_index.get(&v) {
-                current.read_index(dep_node_index);
+                std::mem::drop(current);
+                data.read_index(dep_node_index);
             } else {
                 bug!("DepKind {:?} should be pre-allocated but isn't.", v.kind)
             }
@@ -409,7 +418,7 @@ impl DepGraph {
     #[inline]
     pub fn read_index(&self, dep_node_index: DepNodeIndex) {
         if let Some(ref data) = self.data {
-            data.current.borrow_mut().read_index(dep_node_index);
+            data.read_index(dep_node_index);
         }
     }
 
@@ -891,6 +900,7 @@ pub(super) struct CurrentDepGraph {
     nodes: IndexVec<DepNodeIndex, DepNode>,
     edges: IndexVec<DepNodeIndex, SmallVec<[DepNodeIndex; 8]>>,
     node_to_node_index: FxHashMap<DepNode, DepNodeIndex>,
+    #[allow(dead_code)]
     forbidden_edge: Option<EdgeFilter>,
 
     // Anonymous DepNodes are nodes the ID of which we compute from the list of
@@ -945,130 +955,61 @@ impl CurrentDepGraph {
         }
     }
 
-    fn complete_task(&mut self, key: DepNode, task: OpenTask) -> DepNodeIndex {
-        if let OpenTask::Regular(task) = task {
-            let RegularOpenTask {
-                node,
-                read_set: _,
-                reads
-            } = task.into_inner();
-            assert_eq!(node, key);
-
-            // If this is an input node, we expect that it either has no
-            // dependencies, or that it just depends on DepKind::CrateMetadata
-            // or DepKind::Krate. This happens for some "thin wrapper queries"
-            // like `crate_disambiguator` which sometimes have zero deps (for
-            // when called for LOCAL_CRATE) or they depend on a CrateMetadata
-            // node.
-            if cfg!(debug_assertions) {
-                if node.kind.is_input() && reads.len() > 0 &&
-                   // FIXME(mw): Special case for DefSpan until Spans are handled
-                   //            better in general.
-                   node.kind != DepKind::DefSpan &&
-                    reads.iter().any(|&i| {
-                        !(self.nodes[i].kind == DepKind::CrateMetadata ||
-                          self.nodes[i].kind == DepKind::Krate)
-                    })
-                {
-                    bug!("Input node {:?} with unexpected reads: {:?}",
-                        node,
-                        reads.iter().map(|&i| self.nodes[i]).collect::<Vec<_>>())
-                }
+    fn complete_task(&mut self, node: DepNode, task_deps: TaskDeps) -> DepNodeIndex {
+        // If this is an input node, we expect that it either has no
+        // dependencies, or that it just depends on DepKind::CrateMetadata
+        // or DepKind::Krate. This happens for some "thin wrapper queries"
+        // like `crate_disambiguator` which sometimes have zero deps (for
+        // when called for LOCAL_CRATE) or they depend on a CrateMetadata
+        // node.
+        if cfg!(debug_assertions) {
+            if node.kind.is_input() && task_deps.reads.len() > 0 &&
+                // FIXME(mw): Special case for DefSpan until Spans are handled
+                //            better in general.
+                node.kind != DepKind::DefSpan &&
+                task_deps.reads.iter().any(|&i| {
+                    !(self.nodes[i].kind == DepKind::CrateMetadata ||
+                        self.nodes[i].kind == DepKind::Krate)
+                })
+            {
+                bug!("Input node {:?} with unexpected reads: {:?}",
+                    node,
+                    task_deps.reads.iter().map(|&i| self.nodes[i]).collect::<Vec<_>>())
             }
-
-            self.alloc_node(node, reads)
-        } else {
-            bug!("complete_task() - Expected regular task to be popped")
         }
+
+        self.alloc_node(node, task_deps.reads)
     }
 
-    fn pop_anon_task(&mut self, kind: DepKind, task: OpenTask) -> DepNodeIndex {
-        if let OpenTask::Anon(task) = task {
-            let AnonOpenTask {
-                read_set: _,
-                reads
-            } = task.into_inner();
-            debug_assert!(!kind.is_input());
+    fn complete_anon_task(&mut self, kind: DepKind, task_deps: TaskDeps) -> DepNodeIndex {
+        debug_assert!(!kind.is_input());
 
-            let mut fingerprint = self.anon_id_seed;
-            let mut hasher = StableHasher::new();
+        let mut fingerprint = self.anon_id_seed;
+        let mut hasher = StableHasher::new();
 
-            for &read in reads.iter() {
-                let read_dep_node = self.nodes[read];
+        for &read in task_deps.reads.iter() {
+            let read_dep_node = self.nodes[read];
 
-                ::std::mem::discriminant(&read_dep_node.kind).hash(&mut hasher);
+            ::std::mem::discriminant(&read_dep_node.kind).hash(&mut hasher);
 
-                // Fingerprint::combine() is faster than sending Fingerprint
-                // through the StableHasher (at least as long as StableHasher
-                // is so slow).
-                fingerprint = fingerprint.combine(read_dep_node.hash);
-            }
-
-            fingerprint = fingerprint.combine(hasher.finish());
-
-            let target_dep_node = DepNode {
-                kind,
-                hash: fingerprint,
-            };
-
-            if let Some(&index) = self.node_to_node_index.get(&target_dep_node) {
-                index
-            } else {
-                self.alloc_node(target_dep_node, reads)
-            }
-        } else {
-            bug!("pop_anon_task() - Expected anonymous task to be popped")
+            // Fingerprint::combine() is faster than sending Fingerprint
+            // through the StableHasher (at least as long as StableHasher
+            // is so slow).
+            fingerprint = fingerprint.combine(read_dep_node.hash);
         }
-    }
 
-    fn complete_eval_always_task(&mut self, key: DepNode, task: OpenTask) -> DepNodeIndex {
-        if let OpenTask::EvalAlways {
-            node,
-        } = task {
-            debug_assert_eq!(node, key);
-            let krate_idx = self.node_to_node_index[&DepNode::new_no_params(DepKind::Krate)];
-            self.alloc_node(node, smallvec![krate_idx])
+        fingerprint = fingerprint.combine(hasher.finish());
+
+        let target_dep_node = DepNode {
+            kind,
+            hash: fingerprint,
+        };
+
+        if let Some(&index) = self.node_to_node_index.get(&target_dep_node) {
+            index
         } else {
-            bug!("complete_eval_always_task() - Expected eval always task to be popped");
+            self.alloc_node(target_dep_node, task_deps.reads)
         }
-    }
-
-    fn read_index(&mut self, source: DepNodeIndex) {
-        ty::tls::with_context_opt(|icx| {
-            let icx = if let Some(icx) = icx { icx } else { return };
-            match *icx.task {
-                OpenTask::Regular(ref task) => {
-                    let mut task = task.lock();
-                    self.total_read_count += 1;
-                    if task.read_set.insert(source) {
-                        task.reads.push(source);
-
-                        if cfg!(debug_assertions) {
-                            if let Some(ref forbidden_edge) = self.forbidden_edge {
-                                let target = &task.node;
-                                let source = self.nodes[source];
-                                if forbidden_edge.test(&source, &target) {
-                                    bug!("forbidden edge {:?} -> {:?} created",
-                                        source,
-                                        target)
-                                }
-                            }
-                        }
-                    } else {
-                        self.total_duplicate_read_count += 1;
-                    }
-                }
-                OpenTask::Anon(ref task) => {
-                    let mut task = task.lock();
-                    if task.read_set.insert(source) {
-                        task.reads.push(source);
-                    }
-                }
-                OpenTask::Ignore | OpenTask::EvalAlways { .. } => {
-                    // ignore
-                }
-            }
-        })
     }
 
     fn alloc_node(&mut self,
@@ -1086,24 +1027,45 @@ impl CurrentDepGraph {
     }
 }
 
-pub struct RegularOpenTask {
-    node: DepNode,
-    reads: SmallVec<[DepNodeIndex; 8]>,
-    read_set: FxHashSet<DepNodeIndex>,
+impl DepGraphData {
+    fn read_index(&self, source: DepNodeIndex) {
+        ty::tls::with_context_opt(|icx| {
+            let icx = if let Some(icx) = icx { icx } else {  return };
+            if let Some(task_deps) = icx.task_deps {
+                let mut task_deps = task_deps.lock();
+                if cfg!(debug_assertions) {
+                    self.current.lock().total_read_count += 1;
+                }
+                if task_deps.read_set.insert(source) {
+                    task_deps.reads.push(source);
+
+                    #[cfg(debug_assertions)]
+                    {
+                        if let Some(target) = task_deps.node {
+                            let graph = self.current.lock();
+                            if let Some(ref forbidden_edge) = graph.forbidden_edge {
+                                let source = graph.nodes[source];
+                                if forbidden_edge.test(&source, &target) {
+                                    bug!("forbidden edge {:?} -> {:?} created",
+                                        source,
+                                        target)
+                                }
+                            }
+                        }
+                    }
+                } else if cfg!(debug_assertions) {
+                    self.current.lock().total_duplicate_read_count += 1;
+                }
+            }
+        })
+    }
 }
 
-pub struct AnonOpenTask {
+pub struct TaskDeps {
+    #[cfg(debug_assertions)]
+    node: Option<DepNode>,
     reads: SmallVec<[DepNodeIndex; 8]>,
     read_set: FxHashSet<DepNodeIndex>,
-}
-
-pub enum OpenTask {
-    Regular(Lock<RegularOpenTask>),
-    Anon(Lock<AnonOpenTask>),
-    Ignore,
-    EvalAlways {
-        node: DepNode,
-    },
 }
 
 // A data structure that stores Option<DepNodeColor> values as a contiguous
