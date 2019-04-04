@@ -5,7 +5,7 @@ use crate::io::prelude::*;
 use crate::cmp;
 use crate::error;
 use crate::fmt;
-use crate::io::{self, Initializer, DEFAULT_BUF_SIZE, Error, ErrorKind, SeekFrom, IoVec, IoVecMut};
+use crate::io::{self, Initializer, DEFAULT_BUF_SIZE, Error, ErrorKind, SeekFrom, IoVec, IoVecMut, Close};
 use crate::memchr;
 
 /// The `BufReader` struct adds buffering to any reader.
@@ -350,6 +350,14 @@ impl<R: Seek> Seek for BufReader<R> {
     }
 }
 
+#[unstable(feature = "close-trait", issue = "")]
+impl<R: Close> Close for BufReader<R> {
+    type Error = R::Error;
+    fn close(self) -> Result<(), Self::Error> {
+        self.into_inner().close()
+    }
+}
+
 /// Wraps a writer and buffers its output.
 ///
 /// It can be excessively inefficient to work directly with something that
@@ -656,6 +664,14 @@ impl<W: Write> Drop for BufWriter<W> {
             // dtors should not panic, so we ignore a failed flush
             let _r = self.flush_buf();
         }
+    }
+}
+
+#[unstable(feature = "close-trait", issue = "")]
+impl<W: Close<Error = io::Error> + Write> Close for BufWriter<W> {
+    type Error = W::Error;
+    fn close(self) -> Result<(), Self::Error> {
+        self.into_inner()?.close()
     }
 }
 
