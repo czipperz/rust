@@ -272,6 +272,8 @@ use crate::sys;
 pub use self::buffered::{BufReader, BufWriter, LineWriter};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::buffered::IntoInnerError;
+#[unstable(feature = "close-trait", issue = "")]
+pub use self::close::Close;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::cursor::Cursor;
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -290,6 +292,7 @@ pub use self::stdio::{set_panic, set_print};
 
 pub mod prelude;
 mod buffered;
+mod close;
 mod cursor;
 mod error;
 mod impls;
