@@ -351,6 +351,10 @@ impl File {
         })
     }
 
+    pub fn close(&self) -> io::Result<()> {
+        self.handle.close()
+    }
+
     pub fn handle(&self) -> &Handle { &self.handle }
 
     pub fn into_handle(self) -> Handle { self.handle }

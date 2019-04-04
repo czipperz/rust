@@ -223,6 +223,10 @@ impl File {
     pub fn diverge(&self) -> ! {
         match self.0 {}
     }
+
+    pub fn close(&self) -> io::Result<()> {
+        match self.0 {}
+    }
 }
 
 impl DirBuilder {

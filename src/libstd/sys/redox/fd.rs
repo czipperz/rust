@@ -64,6 +64,10 @@ impl FileDesc {
         }
         cvt(syscall::fcntl(self.fd, syscall::F_SETFL, flags)).and(Ok(()))
     }
+
+    pub fn close(&self) -> io::Result<()> {
+        cvt(syscall::close(self.fd)).and(Ok(()))
+    }
 }
 
 impl<'a> Read for &'a FileDesc {

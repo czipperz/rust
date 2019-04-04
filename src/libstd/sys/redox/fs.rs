@@ -312,6 +312,10 @@ impl File {
         Ok(PathBuf::from(unsafe { String::from_utf8_unchecked(Vec::from(&buf[..count])) }))
     }
 
+    pub fn close(&self) -> io::Result<()> {
+        self.0.close()
+    }
+
     pub fn fd(&self) -> &FileDesc { &self.0 }
 
     pub fn into_fd(self) -> FileDesc { self.0 }

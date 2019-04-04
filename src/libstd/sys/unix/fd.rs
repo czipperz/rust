@@ -273,6 +273,10 @@ impl FileDesc {
         }
         cvt(unsafe { libc::fcntl(fd, libc::F_DUPFD, 0) }).and_then(make_filedesc)
     }
+
+    pub fn close(&self) -> io::Result<()> {
+        cvt(unsafe { libc::close(self.fd) }).map(|_| ())
+    }
 }
 
 impl<'a> Read for &'a FileDesc {
@@ -292,7 +296,7 @@ impl AsInner<c_int> for FileDesc {
 
 impl Drop for FileDesc {
     fn drop(&mut self) {
-        // Note that errors are ignored when closing a file descriptor. The
+        // Note that errors are ignored when dropping a file descriptor. The
         // reason for this is that if an error occurs we don't actually know if
         // the file descriptor was closed or not, and if we retried (for
         // something like EINTR), we might close another valid file descriptor

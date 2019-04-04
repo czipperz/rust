@@ -590,6 +590,10 @@ impl File {
         self.0.duplicate().map(File)
     }
 
+    pub fn close(&self) -> io::Result<()> {
+        self.0.close()
+    }
+
     pub fn fd(&self) -> &FileDesc { &self.0 }
 
     pub fn into_fd(self) -> FileDesc { self.0 }

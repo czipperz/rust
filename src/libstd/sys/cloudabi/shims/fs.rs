@@ -214,6 +214,10 @@ impl File {
         match self.0 {}
     }
 
+    pub fn close(&self) -> io::Result<()> {
+        match self.0 {}
+    }
+
     pub fn set_permissions(&self, _perm: FilePermissions) -> io::Result<()> {
         match self.0 {}
     }

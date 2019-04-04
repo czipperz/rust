@@ -193,6 +193,10 @@ impl RawHandle {
         })?;
         Ok(Handle::new(ret))
     }
+
+    pub fn close(&self) -> io::Result<()> {
+        cvt(unsafe { c::CloseHandle(self.raw()) }).map(|_| ())
+    }
 }
 
 impl<'a> Read for &'a RawHandle {
