@@ -9,7 +9,7 @@
 
 use crate::fmt;
 use crate::ffi::OsString;
-use crate::io::{self, SeekFrom, Seek, Read, Initializer, Write};
+use crate::io::{self, SeekFrom, Seek, Read, Initializer, Write, Close};
 use crate::path::{Path, PathBuf};
 use crate::sys::fs as fs_imp;
 use crate::sys_common::{AsInnerMut, FromInner, AsInner, IntoInner};
@@ -648,6 +648,17 @@ impl Write for &File {
 impl Seek for &File {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.inner.seek(pos)
+    }
+}
+
+#[unstable(feature = "close-trait", issue = "")]
+impl Close for File {
+    type Error = io::Error;
+
+    fn close(self) -> io::Result<()> {
+        let result = self.inner.close();
+        std::mem::forget(self);
+        result
     }
 }
 
