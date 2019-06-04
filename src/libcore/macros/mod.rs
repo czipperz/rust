@@ -1,4 +1,4 @@
-#[doc(include = "panic.md")]
+#[doc(include = "macros/panic.md")]
 #[macro_export]
 #[allow_internal_unstable(core_panic,
     // FIXME(anp, eddyb) `core_intrinsics` is used here to allow calling
